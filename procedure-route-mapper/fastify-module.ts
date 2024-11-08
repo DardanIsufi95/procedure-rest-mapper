@@ -1,5 +1,7 @@
-import type { FastifyInstance, FastifyPluginOptions, FastifyRequest } from 'npm:fastify';
+import type { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from 'npm:fastify';
 import fp from 'npm:fastify-plugin';
+import { expandGlob } from 'jsr:@std/fs';
+import { join } from 'jsr:@std/path';
 
 import { ProcedureRouteMapperConfig } from './interfaces.ts';
 import { RequestContext } from 'npm:@fastify/request-context';
@@ -16,6 +18,14 @@ type Procedure = {
 	name: string;
 	definition: string;
 	parameters: string[];
+};
+
+type HookModule = {
+	preHandler?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	onRequest?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	onSend?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	onResponse?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	test: () => void;
 };
 
 async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureRouteMapperConfig) {
@@ -59,7 +69,11 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 			parameters: JSON.parse(procedure.parameters) as string[],
 		};
 	});
+
+	const proceduresHooksMap = await loadProcedureHooksMap(options.hooksFolder);
+	console.log(proceduresHooksMap);
 	for (const procedure of procedures) {
+		const hooks = proceduresHooksMap[procedure.name] || {};
 		const metadata = parse(procedure.definition).flatMap((block) => block.tags);
 		const [method, url] = parseProcedureName(procedure.name);
 
@@ -72,12 +86,13 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 		});
 
 		const procedureParamMetadata = getParamMetadata(metadata);
-
+		console.log(typeof hooks.preHandler);
 		app.addHook('preValidation', setAuthContext);
 		app.withTypeProvider<ZodTypeProvider>().route({
 			method: method,
 			url: url,
 			preValidation: [...guards],
+			preHandler: hooks.preHandler ? [hooks.preHandler] : undefined,
 			handler: async (request, reply) => {
 				console.log(procedure.name, procedure.parameters);
 				const procedureParams = procedure.parameters
@@ -160,39 +175,6 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 			schema,
 		});
 	}
-	// const procedures = new Array(...rows).map((procedure) => {
-	// 	return {
-	// 		name: procedure.name,
-	// 		definition: procedure.definition,
-	// 		parameters: JSON.parse(procedure.parameters),
-	// 	};
-	// });
-
-	// const proceduresMap = new Map(
-	// 	procedures.map(addProcedureMetadata).reduce((acc, procedure) => {
-	// 		acc.push([procedure.name, procedure]);
-	// 		return acc;
-	// 	}, [] as [string, ReturnType<typeof addProcedureMetadata>][])
-	// );
-
-	// console.log(proceduresMap);
-	// // for(const procedure of procedures) {
-
-	// app.route({
-	// 	method: 'GET',
-	// 	url: '/procedures',
-	// 	handler: async (request, reply) => {
-	// 		const procedures = await app.db.query("SELECT * FROM information_schema.routines WHERE routine_type = 'PROCEDURE'");
-	// 		reply.send(procedures);
-	// 	},
-	// 	schema: {
-	// 		querystring: z.object({ test: z.string() }),
-	// 		params: {},
-	// 		//response: {},
-	// 		//test: z.object({ test: z.string() }),
-	// 		//body: {},
-	// 	},
-	// });
 }
 function parseProcedureName(procedureName: string, prefix: string = 'api_') {
 	const nameWithoutPrefix = procedureName.replace(prefix, '');
@@ -359,6 +341,21 @@ function getParamMetadata(metadata: Spec[]) {
 			};
 		}
 	);
+}
+
+async function loadProcedureHooksMap(hhooksFolder: string) {
+	const hooks = {} as { [name: string]: HookModule };
+
+	for await (const file of expandGlob(`${join(Deno.cwd(), hhooksFolder)}/**/*.ts`)) {
+		const moduleUrl = new URL(`file://${file.path}`);
+		const module: HookModule = await import(moduleUrl.href);
+
+		const name = moduleUrl.pathname.split('/').pop()?.replace('.ts', '');
+
+		hooks[name!] = module;
+	}
+
+	return hooks;
 }
 
 export default fp(registerProcedureRoutes);

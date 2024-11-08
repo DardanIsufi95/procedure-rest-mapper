@@ -39,7 +39,7 @@ app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 app.setErrorHandler(errorHandler);
 app.register(authRoutes, { prefix: '/auth' });
-app.register(procedureRouteMapper);
+app.register(procedureRouteMapper, { hooksFolder: './hooks' });
 
 async function startServer() {
 	try {
