@@ -11,7 +11,6 @@ import { ZodTypeProvider } from 'npm:fastify-type-provider-zod';
 import { setAuthContext } from '../auth/authHandler.ts';
 
 import { requireAuth, requireRole, requirePremission } from '../auth/authGuards.ts';
-import { res } from '../../../AppData/Local/deno/npm/registry.npmjs.org/pino-std-serializers/7.0.0/index.d.ts';
 
 type Procedure = {
 	name: string;
@@ -90,6 +89,8 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 							return (request.body as any)[procedureParamMetadata[param].alias];
 						case 'headers':
 							return request.headers[procedureParamMetadata[param].alias];
+						case 'user':
+							return request.requestContext.get('user')?.[procedureParamMetadata[param].alias];
 						default:
 							return null;
 					}
@@ -230,6 +231,9 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: { par
 					schema.headers = schema.headers.extend({
 						[alias]: schemaPart,
 					});
+					break;
+				case 'user':
+					// Do nothing
 					break;
 				default:
 					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${tag.name}`);

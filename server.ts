@@ -45,7 +45,7 @@ async function startServer() {
 	try {
 		await app.listen({
 			port: config.serverPort,
-			host: '0.0.0.0',
+			host: '127.0.0.1',
 		});
 		console.log(`Server is running on port ${config.serverPort}`);
 	} catch (err) {
