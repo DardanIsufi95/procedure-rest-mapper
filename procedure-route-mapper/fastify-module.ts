@@ -79,62 +79,83 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 			url: url,
 			preValidation: [...guards],
 			handler: async (request, reply) => {
-				const procedureParams = procedure.parameters.map((param) => {
-					switch (procedureParamMetadata[param].getFrom) {
-						case 'querystring':
-							return (request.query as any)[procedureParamMetadata[param].alias];
-						case 'params':
-							return (request.params as any)[procedureParamMetadata[param].alias];
-						case 'body':
-							return (request.body as any)[procedureParamMetadata[param].alias];
-						case 'headers':
-							return request.headers[procedureParamMetadata[param].alias];
-						case 'user':
-							return request.requestContext.get('user')?.[procedureParamMetadata[param].alias];
-						default:
+				console.log(procedure.name, procedure.parameters);
+				const procedureParams = procedure.parameters
+					.map((param) => {
+						switch (procedureParamMetadata[param].getFrom) {
+							case 'querystring':
+								return (request.query as any)[procedureParamMetadata[param].alias];
+							case 'params':
+								return (request.params as any)[procedureParamMetadata[param].alias];
+							case 'body':
+								return (request.body as any)[procedureParamMetadata[param].alias];
+							case 'headers':
+								return request.headers[procedureParamMetadata[param].alias];
+							case 'user':
+								return request.requestContext.get('user')?.[procedureParamMetadata[param].alias];
+							default:
+								return null;
+						}
+					})
+					.map((param) => {
+						if (param === undefined || param === null) {
 							return null;
-					}
-				});
+						}
 
-				const [results] = await app.db.query(`CALL ${procedure.name}(${procedure.parameters.map(() => '?').join(', ')})`, procedureParams);
+						if (Array.isArray(param) || typeof param === 'object') {
+							return JSON.stringify(param);
+						}
 
-				const info = (results as any[]).pop();
+						return param;
+					}); // Add validation here
+				const sql = `CALL ${procedure.name}(${procedureParams.map(() => '?').join(', ')})`;
 
-				const resultMetadata = (results as any[])?.[0]?.[0]?.['#RESULT#'] ? (results as any[]).shift()[0] : null;
+				return await app.db
+					.query(sql, procedureParams)
+					.then((result) => result[0] as any[][])
+					.then((results) => {
+						if (!Array.isArray(results)) {
+							return {};
+						}
 
-				if (!resultMetadata) {
-					return results;
-				}
+						const info = results.pop();
 
-				reply.status(resultMetadata.status ? resultMetadata.status : resultMetadata.error ? 400 : 200);
+						const resultMetadata = results?.[0]?.[0]?.['#RESULT#'] ? results.shift()?.[0] : null;
+						console.log(resultMetadata);
+						if (!resultMetadata) {
+							return results;
+						}
 
-				const resultSchema = resultMetadata?.schema?.split(',') as string[] | undefined;
+						reply.status(resultMetadata.status ? resultMetadata.status : resultMetadata.error ? 400 : 200);
 
-				if (!resultSchema && resultMetadata.error) {
-					return {
-						error: !!resultMetadata.error,
-						success: !!resultMetadata.success,
-						message: resultMetadata.message,
-					};
-				}
+						const resultSchema = resultMetadata?.schema?.split(',') as string[] | undefined;
 
-				if (!resultSchema && !resultMetadata.error) {
-					return results;
-				}
+						if (!resultSchema && resultMetadata.error) {
+							return {
+								error: !!resultMetadata.error,
+								success: !!resultMetadata.success,
+								message: resultMetadata.message,
+							};
+						}
 
-				const preparedResult = resultSchema!.map((type, index) => {
-					if (type === 'object') {
-						return (results as any)[index][0];
-					} else {
-						return (results as any)[index];
-					}
-				});
+						if (!resultSchema && !resultMetadata.error) {
+							return results;
+						}
 
-				if (preparedResult.length === 1) {
-					return preparedResult[0];
-				} else {
-					return preparedResult;
-				}
+						const preparedResult = resultSchema!.map((type, index) => {
+							if (type === 'object') {
+								return results[index][0];
+							} else {
+								return results[index];
+							}
+						});
+
+						if (preparedResult.length === 1) {
+							return preparedResult[0];
+						} else {
+							return preparedResult;
+						}
+					});
 			},
 			schema,
 		});
