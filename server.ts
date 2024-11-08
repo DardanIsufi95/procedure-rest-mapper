@@ -55,3 +55,29 @@ async function startServer() {
 	}
 }
 startServer();
+
+// CREATE DEFINER=`root`@`localhost` PROCEDURE `api_get_hello__world`(
+// 	p_test_a VARCHAR(255),
+// 	p_test_b VARCHAR(255),
+// 	p_test_c VARCHAR(255)
+// )
+// BEGIN
+// 	#Routine body goes here...
+
+// 	/**
+// 			@param {querystring} p_test_a<testa> z.string()
+// 			@param {querystring} p_test_b<testb> z.string()
+// 			@param {querystring} p_test_c<testc> z.string()
+// 			@#param {headers} user.uuid
+
+// 			@#guard auth
+// 			@#guard role ADMIN
+// 			@#guard premissions user:data:save
+
+// 	*/
+
+// 	SELECT true as `#RESULT#` , true as error , 'object' as `schema` , 208 as `status`;
+// 	SELECT p_test_a ,p_test_b ;
+// 	SELECT p_test_a ,p_test_b ;
+
+// END
