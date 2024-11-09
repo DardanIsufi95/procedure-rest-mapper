@@ -271,16 +271,43 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: ZodSc
 
 			switch (tag.type) {
 				case 'querystring':
+					if (!schema.querystring) {
+						schema.querystring = z.object({});
+					}
+					schema.querystring = schema.querystring.extend({
+						[alias]: schemaPart,
+					});
+					break;
 				case 'body':
+					if (!schema.body) {
+						schema.body = z.object({});
+					}
+					schema.body = schema.body.extend({
+						[alias]: schemaPart,
+					});
+					break;
 				case 'params':
+					if (!schema.params) {
+						schema.params = z.object({});
+					}
+					schema.params = schema.params.extend({
+						[alias]: schemaPart,
+					});
+					break;
 				case 'headers':
-					schema[tag.type] = schema[tag.type] ? schema[tag.type]!.extend({ [alias]: schemaPart }) : z.object({ [alias]: schemaPart });
+					if (!schema.headers) {
+						schema.headers = z.object({});
+					}
+					schema.headers = schema.headers.extend({
+						[alias]: schemaPart,
+					});
 					break;
 				case 'user':
-					// Handle 'user' type if needed
+					// Do nothing
 					break;
 				default:
-					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${name} in procedure: ${procedure.name}`);
+					//console.log(tag);
+					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${tag.name}`);
 			}
 		}
 	}
