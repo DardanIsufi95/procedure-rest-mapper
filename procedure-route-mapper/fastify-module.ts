@@ -16,7 +16,7 @@ import type {
 } from 'fastify';
 import fp from 'fastify-plugin';
 import { expandGlob } from 'jsr:@std/fs';
-import { join } from '@std/path';
+import { join } from 'jsr:@std/path';
 
 import { RequestContext } from '@fastify/request-context';
 import { parse, Spec } from 'comment-parser';
@@ -53,6 +53,7 @@ interface ProcedureRouteMapperConfig {
 	guardMap: {
 		[name: string]: (params: string[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 	};
+	customValidationsFolder: string; // Added for custom validation functions
 }
 
 async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureRouteMapperConfig) {
@@ -65,29 +66,29 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	const [rows] = await app.db.query<any>(
 		`
-	  SELECT
-		ROUTINE_NAME AS name,
-		ROUTINE_DEFINITION as definition,
-		CONCAT(
-		  '[',
-		  IFNULL(
-			GROUP_CONCAT('"' , PARAMETER_NAME , '"' ORDER BY ORDINAL_POSITION SEPARATOR ', '),
-			''
-		  ),
-		  ']'
-		) AS parameters
-	  FROM
-		INFORMATION_SCHEMA.ROUTINES r
-	  LEFT JOIN
-		INFORMATION_SCHEMA.PARAMETERS p ON
-		r.SPECIFIC_NAME = p.SPECIFIC_NAME AND
-		r.ROUTINE_SCHEMA = p.SPECIFIC_SCHEMA
-	  WHERE
-		r.ROUTINE_SCHEMA = ?
-		AND r.ROUTINE_TYPE = 'PROCEDURE'
-	  GROUP BY
-		ROUTINE_NAME;
-	  `,
+		SELECT
+		  ROUTINE_NAME AS name,
+		  ROUTINE_DEFINITION as definition,
+		  CONCAT(
+			'[',
+			IFNULL(
+			  GROUP_CONCAT('"' , PARAMETER_NAME , '"' ORDER BY ORDINAL_POSITION SEPARATOR ', '),
+			  ''
+			),
+			']'
+		  ) AS parameters
+		FROM
+		  INFORMATION_SCHEMA.ROUTINES r
+		LEFT JOIN
+		  INFORMATION_SCHEMA.PARAMETERS p ON
+		  r.SPECIFIC_NAME = p.SPECIFIC_NAME AND
+		  r.ROUTINE_SCHEMA = p.SPECIFIC_SCHEMA
+		WHERE
+		  r.ROUTINE_SCHEMA = ?
+		  AND r.ROUTINE_TYPE = 'PROCEDURE'
+		GROUP BY
+		  ROUTINE_NAME;
+		`,
 		[options.schemaName]
 	);
 
@@ -101,6 +102,10 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	const proceduresHooksMap = await loadProcedureHooksMap(options.hooksFolder);
 
+	const validations = await loadCustomValidations(options.customValidationsFolder);
+
+	const schemaParser = new ZodSchemaParser(validations);
+
 	for (const procedure of procedures) {
 		try {
 			const hooks = proceduresHooksMap[procedure.name] || {};
@@ -109,7 +114,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 			console.log(`Registering route: ${method} ${url}`);
 
-			const schema = generateZodSchema(procedure, metadata, new ZodSchemaParser());
+			const schema = generateZodSchema(procedure, metadata, schemaParser);
 
 			const guards = generateGuards(procedure, metadata, options.guardMap);
 
@@ -216,16 +221,14 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 						}
 					} catch (error: any) {
 						const errorMessage = `Error in handler for procedure ${procedure.name}: ${error.message}`;
-						//app.log.error(errorMessage);
 						throw new Error(errorMessage);
 					}
 				},
 				schema,
 			};
-			app.withTypeProvider().route(routeOptions);
+			app.route(routeOptions);
 		} catch (error: any) {
 			const errorMessage = `Error in procedure ${procedure.name}: ${error.message}`;
-			//app.log.error(errorMessage);
 			throw new Error(errorMessage);
 		}
 	}
@@ -287,13 +290,14 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: ZodSc
 
 class ZodSchemaParser {
 	private context: vm.Context;
-	constructor() {
-		this.context = this.createRestrictedContext();
+	constructor(validations: { [name: string]: () => z.ZodTypeAny }) {
+		this.context = this.createRestrictedContext(validations);
 	}
 
-	private createRestrictedContext() {
+	private createRestrictedContext(validations: { [name: string]: () => z.ZodTypeAny }) {
 		const sandbox = {
 			z: z, // Expose only the 'z' object
+			c: validations, // Expose custom validations as 'c'
 		};
 
 		// Create a secure context
@@ -398,6 +402,60 @@ async function loadProcedureHooksMap(hooksFolder: string) {
 	}
 
 	return hooks;
+}
+
+async function loadCustomValidations(customValidationsFolder: string): Promise<{ [name: string]: () => z.ZodTypeAny }> {
+	const validations: { [name: string]: () => z.ZodTypeAny } = {};
+
+	for await (const file of expandGlob(`${join(Deno.cwd(), customValidationsFolder)}/**/*.ts`)) {
+		try {
+			const moduleUrl = new URL(`file://${file.path}`);
+			const module = await import(moduleUrl.href);
+
+			const moduleName = moduleUrl.pathname.split('/').pop()?.replace('.ts', '');
+			if (!moduleName) {
+				throw new Error(`Cannot determine the module name from file path: ${moduleUrl.pathname}`);
+			}
+
+			if (module.default) {
+				if (validations[moduleName]) {
+					throw new Error(`Duplicate validation function name: ${moduleName}`);
+				}
+				const validationFunction = module.default;
+
+				if (typeof validationFunction !== 'function') {
+					throw new Error(`Validation module ${moduleName} does not export a function`);
+				}
+
+				const testSchema = validationFunction();
+				if (!(testSchema instanceof z.ZodType)) {
+					throw new Error(`Validation function ${moduleName} does not return a Zod schema`);
+				}
+				validations[moduleName] = validationFunction;
+			} else {
+				Object.entries(module).forEach(([name, validationFunction]) => {
+					if (validations[name]) {
+						throw new Error(`Duplicate validation function name: ${name}@${moduleName}`);
+					}
+
+					if (typeof validationFunction !== 'function') {
+						throw new Error(`Validation module ${name}@${moduleName} is not a function`);
+					}
+
+					const testSchema = validationFunction();
+					if (!(testSchema instanceof z.ZodType)) {
+						throw new Error(`Validation function ${name}@${moduleName} does not return a Zod schema`);
+					}
+					validations[name] = validationFunction as () => z.ZodTypeAny;
+				});
+			}
+			return validations;
+		} catch (error: any) {
+			throw new Error(`Error loading validation module from file ${file.path}: ${error.message}`);
+		}
+	}
+
+	return validations;
 }
 
 export default fp(registerProcedureRoutes);

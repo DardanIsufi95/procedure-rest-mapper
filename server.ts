@@ -43,6 +43,7 @@ app.register(registerProcedureRoutes, {
 	hooksFolder: './hooks',
 	schemaName: 'test',
 	procedureNamePrefix: 'api_',
+	customValidationsFolder: './custom-validations',
 	guardMap: {
 		auth: requireAuth,
 		role: requireRole,
