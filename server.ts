@@ -7,7 +7,7 @@ import registerDB from './db.ts';
 import errorHandler from './middleware/errorHandler.ts';
 import { authRoutes } from './auth/authRouter.ts';
 
-declare module '@fastify/request-context' {
+declare module 'npm:@fastify/request-context' {
 	interface RequestContextData {
 		token: string | null;
 		isAuthenticated: boolean;

@@ -14,5 +14,10 @@
 		"jsonwebtoken": "npm:jsonwebtoken@^9.0.2",
 		"mysql2": "npm:mysql2@^3.11.4",
 		"zod": "npm:zod@^3.23.8"
+	},
+	"lint": {
+		"rules": {
+			"exclude": ["ban-ts-comment", "no-explicit-any", "no-unused-vars", "require-await"]
+		}
 	}
 }

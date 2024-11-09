@@ -16,7 +16,7 @@ type DecodedTokenData = TokenData & {
 type RefreshTokenData = {
 	id: string;
 };
-console.log('expires', config.jwt.expiresIn);
+//console.log('expires', config.jwt.expiresIn);
 function verifyOnly(token: string): boolean {
 	try {
 		verifyJWT(token, config.jwt.secret);

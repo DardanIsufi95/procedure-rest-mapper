@@ -47,7 +47,7 @@ export async function setAuthContext(request: FastifyRequest, reply: any) {
 
 		tokenData = decoded?.data || null;
 		isAuthenticated = !!decoded;
-		isAuthorised = !!decoded && !Boolean(decoded.isExpired);
+		isAuthorised = !!decoded && !decoded.isExpired;
 
 		//console.log('tokenData', decoded);
 	} catch (error) {

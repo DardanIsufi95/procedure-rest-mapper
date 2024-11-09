@@ -47,21 +47,6 @@ export function errorHandler(error: any, request: FastifyRequest, reply: Fastify
 					],
 				});
 			}
-
-			return reply.status(Number(statusCode)).send({
-				error: true,
-				type: type.toUpperCase(),
-				code: code.toUpperCase(),
-				message: message,
-				errors:
-					type.toUpperCase() == 'FIELD'
-						? [
-								{
-									code: code.toUpperCase(),
-								},
-						  ]
-						: undefined,
-			});
 		}
 	}
 

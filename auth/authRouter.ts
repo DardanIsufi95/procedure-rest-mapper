@@ -1,6 +1,4 @@
 import { FastifyInstance } from 'npm:fastify';
-import { ZodTypeProvider } from 'npm:fastify-type-provider-zod';
-import { setAuthContext } from './authHandler.ts';
 import * as tokensUtils from './tokenUtils.ts';
 import { z } from 'npm:zod';
 
@@ -17,13 +15,13 @@ export const RequestTokenFromRefreshTokenSchema = z.object({
 
 export const RequestTokenSchema = z.union([RequestTokenFromPasswordSchema, RequestTokenFromRefreshTokenSchema]);
 export async function authRoutes(app: FastifyInstance, options: any) {
-	await app.withTypeProvider<ZodTypeProvider>().post('/token', {
+	await app.withTypeProvider().post('/token', {
 		schema: {
 			body: RequestTokenFromPasswordSchema,
 		},
 		handler: async (request, reply) => {
 			const body = request.body as z.infer<typeof RequestTokenSchema>;
-			console.log(body);
+			//console.log(body);
 			if (body.grant_type === 'password') {
 				const token = await tokensUtils.tokenSign({
 					uuid: body.username,

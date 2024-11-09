@@ -1,4 +1,13 @@
-import type { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from 'npm:fastify';
+import type {
+	FastifyInstance,
+	FastifyPluginOptions,
+	FastifyRequest,
+	FastifyReply,
+	preHandlerHookHandler,
+	onRequestHookHandler,
+	onSendHookHandler,
+	onResponseHookHandler,
+} from 'npm:fastify';
 import fp from 'npm:fastify-plugin';
 import { expandGlob } from 'jsr:@std/fs';
 import { join } from 'jsr:@std/path';
@@ -13,7 +22,6 @@ import { ZodTypeProvider } from 'npm:fastify-type-provider-zod';
 import { setAuthContext } from '../auth/authHandler.ts';
 
 import { requireAuth, requireRole, requirePremission } from '../auth/authGuards.ts';
-import { req } from "../../../AppData/Local/deno/npm/registry.npmjs.org/pino-std-serializers/7.0.0/index.d.ts";
 
 type Procedure = {
 	name: string;
@@ -22,10 +30,10 @@ type Procedure = {
 };
 
 type HookModule = {
-	preHandler?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-	onRequest?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-	onSend?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-	onResponse?: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	preHandler?: preHandlerHookHandler;
+	onRequest?: onRequestHookHandler;
+	onSend?: onSendHookHandler;
+	onResponse?: onResponseHookHandler;
 	test: () => void;
 };
 
@@ -73,15 +81,14 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	const proceduresHooksMap = await loadProcedureHooksMap(options.hooksFolder);
 
-	
-	console.log(proceduresHooksMap);
+	//console.log(proceduresHooksMap);
 	for (const procedure of procedures) {
 		const hooks = proceduresHooksMap[procedure.name] || {};
 		const metadata = parse(procedure.definition).flatMap((block) => block.tags);
 		const [method, url] = parseProcedureName(procedure.name);
 
 		console.log(method, url);
-		
+
 		const schema = generateZodSchema(procedure, metadata, new ZodSchemaParser());
 
 		const guards = generateGuards(procedure, metadata, {
@@ -91,15 +98,15 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 		});
 
 		const procedureParamMetadata = getParamMetadata(metadata);
-		console.log(procedureParamMetadata)
+		//console.log(procedureParamMetadata);
 		app.addHook('preValidation', setAuthContext);
-		app.withTypeProvider<ZodTypeProvider>().route({
+		app.withTypeProvider().route({
 			method: method,
 			url: url,
 			preValidation: [...guards],
 			preHandler: hooks.preHandler ? [hooks.preHandler] : undefined,
 			handler: async (request, reply) => {
-				console.log(procedure.name, procedure.parameters , request.params);
+				//console.log(procedure.name, procedure.parameters, request.params);
 				const procedureParams = procedure.parameters
 					.map((param) => {
 						switch (procedureParamMetadata[param].getFrom) {
@@ -112,6 +119,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 							case 'headers':
 								return request.headers[procedureParamMetadata[param].alias];
 							case 'user':
+								//@ts-ignore
 								return request.requestContext.get('user')?.[procedureParamMetadata[param].alias];
 							default:
 								return null;
@@ -141,7 +149,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 						const info = results.pop();
 
 						const resultMetadata = results?.[0]?.[0]?.['#RESULT#'] ? results.shift()?.[0] : null;
-						
+
 						if (!resultMetadata) {
 							return results;
 						}
@@ -185,9 +193,10 @@ function parseProcedureName(procedureName: string, prefix: string = 'api_') {
 	const nameWithoutPrefix = procedureName.replace(prefix, '');
 	const [methodPart, ...urlParts] = nameWithoutPrefix.split('_');
 	const method = methodPart.toUpperCase();
-	let url = urlParts
-		.join('-')
+	const url = urlParts
+		.join('_')
 		.replace(/__/g, '/')
+		.replace(/_/g, '-')
 		.replace(/\.(\w+)\./g, ':$1');
 
 	return [method, `/${url}`];
@@ -204,7 +213,7 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: { par
 	for (const tag of metadata) {
 		if (tag.tag === 'param') {
 			const [tagname, name, alias] = tag.name.match(/(\w+)<(\w+)>/) || [tag.name, tag.name, tag.name];
-			console.log(tagname, name, alias);
+			//console.log(tagname, name, alias);
 			const schemaPart = parser.parse(tag.description) || z.string();
 
 			switch (tag.type) {
@@ -244,7 +253,7 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: { par
 					// Do nothing
 					break;
 				default:
-					console.log(tag);
+					//console.log(tag);
 					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${tag.name}`);
 			}
 		}

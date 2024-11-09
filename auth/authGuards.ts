@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyRequestContext } from 'npm:fast
 import { HttpError, Forbidden, Unauthorized } from '../HttpErrors.ts';
 
 export const requireAuth = () => async (request: FastifyRequest, reply: any) => {
+	//@ts-ignore
 	console.log('requireAuth', request.requestContext.get('isAuthenticated'), request.requestContext.get('isAuthorised'));
 
 	//@ts-ignore
