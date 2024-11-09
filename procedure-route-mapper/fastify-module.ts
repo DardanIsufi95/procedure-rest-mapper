@@ -3,25 +3,29 @@ import type {
 	FastifyPluginOptions,
 	FastifyRequest,
 	FastifyReply,
+	preParsingHookHandler,
 	preHandlerHookHandler,
 	onRequestHookHandler,
 	onSendHookHandler,
 	onResponseHookHandler,
-} from 'npm:fastify';
-import fp from 'npm:fastify-plugin';
+	preValidationHookHandler,
+	preSerializationHookHandler,
+	onTimeoutHookHandler,
+	onErrorHookHandler,
+	RouteOptions,
+} from 'fastify';
+import fp from 'fastify-plugin';
 import { expandGlob } from 'jsr:@std/fs';
-import { join } from 'jsr:@std/path';
+import { join } from '@std/path';
 
-import { ProcedureRouteMapperConfig } from './interfaces.ts';
-import { RequestContext } from 'npm:@fastify/request-context';
-import { parse, Spec } from 'npm:comment-parser';
-import { z } from 'npm:zod';
+import { RequestContext } from '@fastify/request-context';
+import { parse, Spec } from 'comment-parser';
+import { z } from 'zod';
 import vm from 'node:vm';
-import { ZodTypeProvider } from 'npm:fastify-type-provider-zod';
 
 import { setAuthContext } from '../auth/authHandler.ts';
 
-import { requireAuth, requireRole, requirePremission } from '../auth/authGuards.ts';
+import { requireAuth, requireRole, requirePermission } from '../auth/authGuards.ts';
 
 type Procedure = {
 	name: string;
@@ -30,12 +34,26 @@ type Procedure = {
 };
 
 type HookModule = {
-	preHandler?: preHandlerHookHandler;
 	onRequest?: onRequestHookHandler;
+	preParsing?: preParsingHookHandler;
+	preValidation?: preValidationHookHandler;
+	preHandler?: preHandlerHookHandler;
+	preSerialization?: preSerializationHookHandler;
 	onSend?: onSendHookHandler;
 	onResponse?: onResponseHookHandler;
-	test: () => void;
+	onTimeout?: onTimeoutHookHandler;
+	onError?: onErrorHookHandler;
+	// Additional hooks can be added here
 };
+
+interface ProcedureRouteMapperConfig {
+	hooksFolder: string;
+	schemaName: string;
+	procedureNamePrefix: string;
+	guardMap: {
+		[name: string]: (params: string[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+	};
+}
 
 async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureRouteMapperConfig) {
 	if (!app.db) {
@@ -45,31 +63,33 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 		throw new Error('Request context not found');
 	}
 
-	const [rows] = await app.db.query<any>(/*sql*/ `
-		SELECT
-			ROUTINE_NAME AS name,
-			ROUTINE_DEFINITION as definition,
-			CONCAT('[', 
-				IFNULL(
-								
-					GROUP_CONCAT('"' , PARAMETER_NAME , '"' ORDER BY ORDINAL_POSITION SEPARATOR ', '),
-					'' -- Returns an empty array if there are no parameters
-				), 
-			']') AS parameters
-		FROM
-			INFORMATION_SCHEMA.ROUTINES r
-		LEFT JOIN
-			INFORMATION_SCHEMA.PARAMETERS p
-		ON
-			r.SPECIFIC_NAME = p.SPECIFIC_NAME
-			AND r.ROUTINE_SCHEMA = p.SPECIFIC_SCHEMA
-		WHERE
-			r.ROUTINE_SCHEMA = 'test'
-			AND r.ROUTINE_TYPE = 'PROCEDURE'
-		GROUP BY
-			ROUTINE_NAME;
-
-	`);
+	const [rows] = await app.db.query<any>(
+		`
+	  SELECT
+		ROUTINE_NAME AS name,
+		ROUTINE_DEFINITION as definition,
+		CONCAT(
+		  '[',
+		  IFNULL(
+			GROUP_CONCAT('"' , PARAMETER_NAME , '"' ORDER BY ORDINAL_POSITION SEPARATOR ', '),
+			''
+		  ),
+		  ']'
+		) AS parameters
+	  FROM
+		INFORMATION_SCHEMA.ROUTINES r
+	  LEFT JOIN
+		INFORMATION_SCHEMA.PARAMETERS p ON
+		r.SPECIFIC_NAME = p.SPECIFIC_NAME AND
+		r.ROUTINE_SCHEMA = p.SPECIFIC_SCHEMA
+	  WHERE
+		r.ROUTINE_SCHEMA = ?
+		AND r.ROUTINE_TYPE = 'PROCEDURE'
+	  GROUP BY
+		ROUTINE_NAME;
+	  `,
+		[options.schemaName]
+	);
 
 	const procedures: Procedure[] = new Array(...rows).map((procedure) => {
 		return {
@@ -81,67 +101,78 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	const proceduresHooksMap = await loadProcedureHooksMap(options.hooksFolder);
 
-	//console.log(proceduresHooksMap);
 	for (const procedure of procedures) {
-		const hooks = proceduresHooksMap[procedure.name] || {};
-		const metadata = parse(procedure.definition).flatMap((block) => block.tags);
-		const [method, url] = parseProcedureName(procedure.name);
+		try {
+			const hooks = proceduresHooksMap[procedure.name] || {};
+			const metadata = parse(procedure.definition).flatMap((block) => block.tags);
+			const [method, url] = parseProcedureName(procedure.name, options.procedureNamePrefix);
 
-		console.log(method, url);
+			console.log(`Registering route: ${method} ${url}`);
 
-		const schema = generateZodSchema(procedure, metadata, new ZodSchemaParser());
+			const schema = generateZodSchema(procedure, metadata, new ZodSchemaParser());
 
-		const guards = generateGuards(procedure, metadata, {
-			auth: requireAuth,
-			role: requireRole,
-			premission: requirePremission,
-		});
+			const guards = generateGuards(procedure, metadata, options.guardMap);
 
-		const procedureParamMetadata = getParamMetadata(metadata);
-		//console.log(procedureParamMetadata);
-		app.addHook('preValidation', setAuthContext);
-		app.withTypeProvider().route({
-			method: method,
-			url: url,
-			preValidation: [...guards],
-			preHandler: hooks.preHandler ? [hooks.preHandler] : undefined,
-			handler: async (request, reply) => {
-				//console.log(procedure.name, procedure.parameters, request.params);
-				const procedureParams = procedure.parameters
-					.map((param) => {
-						switch (procedureParamMetadata[param].getFrom) {
-							case 'querystring':
-								return (request.query as any)[procedureParamMetadata[param].alias];
-							case 'params':
-								return (request.params as any)[procedureParamMetadata[param].alias];
-							case 'body':
-								return (request.body as any)[procedureParamMetadata[param].alias];
-							case 'headers':
-								return request.headers[procedureParamMetadata[param].alias];
-							case 'user':
-								//@ts-ignore
-								return request.requestContext.get('user')?.[procedureParamMetadata[param].alias];
-							default:
+			const procedureParamMetadata = getParamMetadata(metadata);
+
+			const routeOptions: RouteOptions = {
+				method,
+				url,
+				preValidation: [setAuthContext, ...guards, ...(hooks.preValidation ? (Array.isArray(hooks.preValidation) ? hooks.preValidation : [hooks.preValidation]) : [])],
+				preHandler: hooks.preHandler ? (Array.isArray(hooks.preHandler) ? hooks.preHandler : [hooks.preHandler]) : [],
+				onRequest: hooks.onRequest,
+				preParsing: hooks.preParsing,
+				preSerialization: hooks.preSerialization,
+				onSend: hooks.onSend,
+				onResponse: hooks.onResponse,
+				onTimeout: hooks.onTimeout,
+				onError: hooks.onError,
+				handler: async (request, reply) => {
+					try {
+						const procedureParams = procedure.parameters.map((param) => {
+							const paramMeta = procedureParamMetadata[param];
+							if (!paramMeta) {
+								throw new Error(`Parameter metadata not found for parameter: ${param} in procedure: ${procedure.name}`);
+							}
+
+							let value;
+							switch (paramMeta.getFrom) {
+								case 'querystring':
+									value = (request.query as any)[paramMeta.alias];
+									break;
+								case 'params':
+									value = (request.params as any)[paramMeta.alias];
+									break;
+								case 'body':
+									value = (request.body as any)[paramMeta.alias];
+									break;
+								case 'headers':
+									value = request.headers[paramMeta.alias];
+									break;
+								case 'user':
+									//@ts-ignore
+									value = request.requestContext.get('user')?.[paramMeta.alias];
+									break;
+								default:
+									throw new Error(`Unknown getFrom value: ${paramMeta.getFrom} for parameter: ${param} in procedure: ${procedure.name}`);
+							}
+
+							if (value === undefined || value === null) {
 								return null;
-						}
-					})
-					.map((param) => {
-						if (param === undefined || param === null) {
-							return null;
-						}
+							}
 
-						if (Array.isArray(param) || typeof param === 'object') {
-							return JSON.stringify(param);
-						}
+							if (Array.isArray(value) || typeof value === 'object') {
+								return JSON.stringify(value);
+							}
 
-						return param;
-					}); // Add validation here
-				const sql = `CALL \`${procedure.name}\`(${procedureParams.map(() => '?').join(', ')})`;
-				//console.log(sql, procedureParams);
-				return await app.db
-					.query(sql, procedureParams)
-					.then((result) => result[0] as any[][])
-					.then((results) => {
+							return value;
+						});
+
+						const sql = `CALL \`${procedure.name}\`(${procedureParams.map(() => '?').join(', ')})`;
+						const dbResponse = await app.db.query(sql, procedureParams);
+
+						const results = dbResponse[0] as any;
+
 						if (!Array.isArray(results)) {
 							return {};
 						}
@@ -183,14 +214,25 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 						} else {
 							return preparedResult;
 						}
-					});
-			},
-			schema,
-		});
+					} catch (error: any) {
+						const errorMessage = `Error in handler for procedure ${procedure.name}: ${error.message}`;
+						//app.log.error(errorMessage);
+						throw new Error(errorMessage);
+					}
+				},
+				schema,
+			};
+			app.withTypeProvider().route(routeOptions);
+		} catch (error: any) {
+			const errorMessage = `Error in procedure ${procedure.name}: ${error.message}`;
+			//app.log.error(errorMessage);
+			throw new Error(errorMessage);
+		}
 	}
 }
-function parseProcedureName(procedureName: string, prefix: string = 'api_') {
-	const nameWithoutPrefix = procedureName.replace(prefix, '');
+
+function parseProcedureName(procedureName: string, procedureNamePrefix: string = 'api_') {
+	const nameWithoutPrefix = procedureName.replace(procedureNamePrefix, '');
 	const [methodPart, ...urlParts] = nameWithoutPrefix.split('_');
 	const method = methodPart.toUpperCase();
 	const url = urlParts
@@ -202,59 +244,40 @@ function parseProcedureName(procedureName: string, prefix: string = 'api_') {
 	return [method, `/${url}`];
 }
 
-function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: { parse: (string: string) => z.ZodAny }) {
-	const schema = {} as {
+function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: ZodSchemaParser) {
+	const schema: {
 		querystring?: z.ZodObject<any>;
 		params?: z.ZodObject<any>;
 		body?: z.ZodObject<any>;
 		headers?: z.ZodObject<any>;
-	};
+	} = {};
 
 	for (const tag of metadata) {
 		if (tag.tag === 'param') {
-			const [tagname, name, alias] = tag.name.match(/(\w+)<(\w+)>/) || [tag.name, tag.name, tag.name];
-			//console.log(tagname, name, alias);
-			const schemaPart = parser.parse(tag.description) || z.string();
+			const match = tag.name.match(/(\w+)<(\w+)>/);
+			const name = match ? match[1] : tag.name;
+			const alias = match ? match[2] : tag.name;
+
+			let schemaPart: z.ZodAny;
+
+			try {
+				schemaPart = parser.parse(tag.description);
+			} catch (error: any) {
+				throw new Error(`Error parsing schema for parameter ${name} in procedure ${procedure.name}: ${error.message}`);
+			}
 
 			switch (tag.type) {
 				case 'querystring':
-					if (!schema.querystring) {
-						schema.querystring = z.object({});
-					}
-					schema.querystring = schema.querystring.extend({
-						[alias]: schemaPart,
-					});
-					break;
 				case 'body':
-					if (!schema.body) {
-						schema.body = z.object({});
-					}
-					schema.body = schema.body.extend({
-						[alias]: schemaPart,
-					});
-					break;
 				case 'params':
-					if (!schema.params) {
-						schema.params = z.object({});
-					}
-					schema.params = schema.params.extend({
-						[alias]: schemaPart,
-					});
-					break;
 				case 'headers':
-					if (!schema.headers) {
-						schema.headers = z.object({});
-					}
-					schema.headers = schema.headers.extend({
-						[alias]: schemaPart,
-					});
+					schema[tag.type] = schema[tag.type] ? schema[tag.type]!.extend({ [alias]: schemaPart }) : z.object({ [alias]: schemaPart });
 					break;
 				case 'user':
-					// Do nothing
+					// Handle 'user' type if needed
 					break;
 				default:
-					//console.log(tag);
-					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${tag.name}`);
+					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${name} in procedure: ${procedure.name}`);
 			}
 		}
 	}
@@ -273,13 +296,13 @@ class ZodSchemaParser {
 			z: z, // Expose only the 'z' object
 		};
 
-		// Remove dangerous globals
+		// Create a secure context
 		const context = vm.createContext(sandbox, {
 			name: 'zod-sandbox',
 			origin: 'zod-sandbox',
 		});
 
-		// Remove all properties from global
+		// Remove dangerous globals
 		const unsafeGlobals = [
 			'process',
 			'require',
@@ -304,10 +327,13 @@ class ZodSchemaParser {
 	}
 
 	parse(string: string) {
-		const script = new vm.Script(string);
-		const schema = script.runInContext(this.context);
-
-		return schema;
+		try {
+			const script = new vm.Script(string);
+			const schema = script.runInContext(this.context);
+			return schema;
+		} catch (error: any) {
+			throw new Error(`Error parsing Zod schema: ${error.message} in schema: ${string}`);
+		}
 	}
 }
 
@@ -315,59 +341,60 @@ function generateGuards(
 	procedure: Procedure,
 	metadata: Spec[],
 	guardMap: {
-		[name: string]: (params: string[]) => (request: FastifyRequest, reply: any) => Promise<void>;
+		[name: string]: (params: string[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
 	}
 ) {
 	return metadata
 		.filter((tag) => tag.tag === 'guard')
 		.map((guard) => {
 			if (!guardMap[guard.name]) {
-				throw new Error(`Guard not found: ${guard.name}`);
+				throw new Error(`Guard not found: ${guard.name} in procedure: ${procedure.name}`);
 			}
-			const paraps = guard.description.split(',').map((param) => param.trim());
-			const guardFunction = guardMap[guard.name](paraps);
-
-			return guardFunction;
+			const params = guard.description ? guard.description.split(',').map((param) => param.trim()) : [];
+			return guardMap[guard.name](params);
 		});
 }
 
 function getParamMetadata(metadata: Spec[]) {
-	return metadata.reduce(
-		(acc, tag) => {
-			if (tag.tag === 'param') {
-				const [tagname, name, alias] = tag.name.match(/(\w+)<(\w+)>/) || [tag.name, tag.name, tag.name];
+	const allowedGetFromValues = ['querystring', 'params', 'body', 'headers', 'user'];
+	return metadata.reduce((acc, tag) => {
+		if (tag.tag === 'param') {
+			const match = tag.name.match(/(\w+)<(\w+)>/);
+			const name = match ? match[1] : tag.name;
+			const alias = match ? match[2] : tag.name;
 
-				acc[name] = {
-					name: name,
-					alias: alias,
-					getFrom: tag.type,
-					description: tag.description,
-				};
+			if (!allowedGetFromValues.includes(tag.type)) {
+				throw new Error(`Invalid getFrom value: ${tag.type} for parameter: ${name}`);
 			}
 
-			return acc;
-		},
-		{} as {
-			[name: string]: {
-				name: string;
-				alias: string;
-				getFrom: string;
-				description: string;
+			acc[name] = {
+				name,
+				alias,
+				getFrom: tag.type,
+				description: tag.description,
 			};
 		}
-	);
+		return acc;
+	}, {} as { [name: string]: { name: string; alias: string; getFrom: string; description: string } });
 }
 
-async function loadProcedureHooksMap(hhooksFolder: string) {
-	const hooks = {} as { [name: string]: HookModule };
+async function loadProcedureHooksMap(hooksFolder: string) {
+	const hooks: { [name: string]: HookModule } = {};
 
-	for await (const file of expandGlob(`${join(Deno.cwd(), hhooksFolder)}/**/*.ts`)) {
-		const moduleUrl = new URL(`file://${file.path}`);
-		const module: HookModule = await import(moduleUrl.href);
+	for await (const file of expandGlob(`${join(Deno.cwd(), hooksFolder)}/**/*.ts`)) {
+		try {
+			const moduleUrl = new URL(`file://${file.path}`);
+			const module: HookModule = await import(moduleUrl.href);
 
-		const name = moduleUrl.pathname.split('/').pop()?.replace('.ts', '');
+			const name = moduleUrl.pathname.split('/').pop()?.replace('.ts', '');
+			if (!name) {
+				throw new Error(`Cannot determine the module name from file path: ${moduleUrl.pathname}`);
+			}
 
-		hooks[name!] = module;
+			hooks[name] = module;
+		} catch (error: any) {
+			throw new Error(`Error loading hook module from file ${file.path}: ${error.message}`);
+		}
 	}
 
 	return hooks;

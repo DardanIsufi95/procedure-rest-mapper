@@ -26,7 +26,7 @@ export const requireRole = (role: string | string[]) => async (request: FastifyR
 	}
 };
 
-export const requirePremission = (permission: string | string[]) => async (request: FastifyRequest, reply: any) => {
+export const requirePermission = (permission: string | string[]) => async (request: FastifyRequest, reply: any) => {
 	//@ts-ignore
 	const userPermissions = request.requestContext.get('user')?.permissions || [];
 	const permissions = Array.isArray(permission) ? permission : [permission];

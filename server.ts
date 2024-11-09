@@ -2,11 +2,11 @@ import fastify from 'npm:fastify';
 import fastifyRequestContext, { RequestContext } from 'npm:@fastify/request-context';
 import { serializerCompiler, validatorCompiler } from 'npm:fastify-type-provider-zod';
 import config from './config.ts';
-import procedureRouteMapper from './procedure-route-mapper/fastify-module.ts';
+import registerProcedureRoutes from './procedure-route-mapper/fastify-module.ts';
 import registerDB from './db.ts';
 import errorHandler from './middleware/errorHandler.ts';
 import { authRoutes } from './auth/authRouter.ts';
-
+import { requireAuth, requireRole, requirePermission } from './auth/authGuards.ts';
 declare module 'npm:@fastify/request-context' {
 	interface RequestContextData {
 		token: string | null;
@@ -39,7 +39,16 @@ app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 app.setErrorHandler(errorHandler);
 app.register(authRoutes, { prefix: '/auth' });
-app.register(procedureRouteMapper, { hooksFolder: './hooks' });
+app.register(registerProcedureRoutes, {
+	hooksFolder: './hooks',
+	schemaName: 'test',
+	procedureNamePrefix: 'api_',
+	guardMap: {
+		auth: requireAuth,
+		role: requireRole,
+		permission: requirePermission,
+	},
+});
 
 async function startServer() {
 	try {
