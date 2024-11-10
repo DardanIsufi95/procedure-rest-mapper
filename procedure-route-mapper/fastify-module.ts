@@ -187,9 +187,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 						return results;
 					} catch (error: any) {
-						console.error(error);
-						const errorMessage = `Error in handler for procedure ${procedure.name}: ${error.message}`;
-						throw new Error(errorMessage);
+						throw error;
 					}
 				},
 				schema,

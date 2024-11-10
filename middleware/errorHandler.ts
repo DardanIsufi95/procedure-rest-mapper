@@ -18,7 +18,7 @@ export function errorHandler(error: any, request: FastifyRequest, reply: Fastify
 	}
 
 	if (error.sqlState) {
-		if (error.sqlState.startsWith('45')) {
+		if (error.sqlState.startsWith('45') || Number.isNaN(Number(error.sqlState))) {
 			const errorParts = error.message.split('|');
 
 			const statusCode = Number(errorParts[0]);
