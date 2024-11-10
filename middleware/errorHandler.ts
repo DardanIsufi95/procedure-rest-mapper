@@ -2,6 +2,7 @@ import { FastifyReply, FastifyRequest } from 'npm:fastify';
 import { HttpError } from '../HttpErrors.ts';
 
 export function errorHandler(error: any, request: FastifyRequest, reply: FastifyReply) {
+	console.error('errorHandler', error);
 	if (error?.validation) {
 		return reply.status(400).send({
 			error: true,

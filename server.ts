@@ -25,6 +25,10 @@ declare module 'fastify' {
 	interface FastifyInstance {
 		requestContext: RequestContext;
 	}
+
+	interface FastifyRequest {
+		requestData: Map<string, any>;
+	}
 }
 
 const app = fastify({
@@ -35,6 +39,11 @@ const app = fastify({
 
 app.register(registerDB, config.database);
 app.register(fastifyRequestContext);
+
+app.addHook('preValidation', async (request, reply) => {
+	request.requestData = new Map();
+});
+
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 app.setErrorHandler(errorHandler);

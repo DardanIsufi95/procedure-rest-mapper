@@ -277,6 +277,9 @@ function generateZodSchema(procedure: Procedure, metadata: Spec[], parser: ZodSc
 				case 'user':
 					// Do nothing
 					break;
+				case 'request':
+					// Do nothing
+					break;
 				default:
 					//console.log(tag);
 					throw new Error(`Unknown parameter type: ${tag.type} for parameter: ${tag.name}`);
@@ -359,7 +362,7 @@ function generateGuards(
 }
 
 function getParamMetadata(metadata: Spec[]) {
-	const allowedGetFromValues = ['querystring', 'params', 'body', 'headers', 'user'];
+	const allowedGetFromValues = ['querystring', 'params', 'body', 'headers', 'user', 'request'];
 	return metadata.reduce((acc, tag) => {
 		if (tag.tag === 'param') {
 			const match = tag.name.match(/(\w+)<(\w+)>/);
@@ -403,7 +406,6 @@ async function loadProcedureHooksMap(hooksFolder: string) {
 	return hooks;
 }
 
-// Replace loadProcedureHooksMap with loadHooks
 async function loadHooks(hooksFolder: string): Promise<{ [name: string]: Function }> {
 	const hooks: { [name: string]: Function } = {};
 
@@ -522,6 +524,9 @@ class Procedures {
 				case 'user':
 					//@ts-ignore
 					value = request.requestContext.get('user')?.[paramMeta.alias];
+					break;
+				case 'request':
+					value = request.requestData.get(paramMeta.alias);
 					break;
 				default:
 					throw new Error(`Unknown getFrom value: ${paramMeta.getFrom} for parameter: ${param} in procedure: ${procedure.name}`);
