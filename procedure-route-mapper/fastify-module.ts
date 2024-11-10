@@ -25,11 +25,15 @@ import vm from 'node:vm';
 
 import { setAuthContext } from '../auth/authHandler.ts';
 
-import { requireAuth, requireRole, requirePermission } from '../auth/authGuards.ts';
+declare module 'fastify' {
+	interface FastifyInstance {
+		procedures: Procedures;
+	}
+}
 
 type Procedure = {
 	name: string;
-	definition: string;
+	metadata: Spec[];
 	parameters: string[];
 };
 
@@ -95,7 +99,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 	const procedures: Procedure[] = new Array(...rows).map((procedure) => {
 		return {
 			name: procedure.name,
-			definition: procedure.definition,
+			metadata: parse(procedure.definition).flatMap((block) => block.tags),
 			parameters: JSON.parse(procedure.parameters) as string[],
 		};
 	});
@@ -106,10 +110,13 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	const schemaParser = new ZodSchemaParser(validations);
 
+	// Create an instance of Procedures and decorate the app with it
+	app.decorate('procedures', new Procedures(procedures, app));
+
 	for (const procedure of procedures) {
 		try {
 			const hooks = proceduresHooksMap[procedure.name] || {};
-			const metadata = parse(procedure.definition).flatMap((block) => block.tags);
+			const metadata = procedure.metadata;
 			const [method, url] = parseProcedureName(procedure.name, options.procedureNamePrefix);
 
 			console.log(`Registering route: ${method} ${url}`);
@@ -134,57 +141,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 				onError: hooks.onError,
 				handler: async (request, reply) => {
 					try {
-						const procedureParams = procedure.parameters.map((param) => {
-							const paramMeta = procedureParamMetadata[param];
-							if (!paramMeta) {
-								throw new Error(`Parameter metadata not found for parameter: ${param} in procedure: ${procedure.name}`);
-							}
-
-							let value;
-							switch (paramMeta.getFrom) {
-								case 'querystring':
-									value = (request.query as any)[paramMeta.alias];
-									break;
-								case 'params':
-									value = (request.params as any)[paramMeta.alias];
-									break;
-								case 'body':
-									value = (request.body as any)[paramMeta.alias];
-									break;
-								case 'headers':
-									value = request.headers[paramMeta.alias];
-									break;
-								case 'user':
-									//@ts-ignore
-									value = request.requestContext.get('user')?.[paramMeta.alias];
-									break;
-								default:
-									throw new Error(`Unknown getFrom value: ${paramMeta.getFrom} for parameter: ${param} in procedure: ${procedure.name}`);
-							}
-
-							if (value === undefined || value === null) {
-								return null;
-							}
-
-							if (Array.isArray(value) || typeof value === 'object') {
-								return JSON.stringify(value);
-							}
-
-							return value;
-						});
-
-						const sql = `CALL \`${procedure.name}\`(${procedureParams.map(() => '?').join(', ')})`;
-						const dbResponse = await app.db.query(sql, procedureParams);
-
-						const results = dbResponse[0] as any;
-
-						if (!Array.isArray(results)) {
-							return {};
-						}
-
-						const info = results.pop();
-
-						const resultMetadata = results?.[0]?.[0]?.['#RESULT#'] ? results.shift()?.[0] : null;
+						const [results, resultMetadata] = await app.procedures.executef(procedure.name, request);
 
 						if (!resultMetadata) {
 							return results;
@@ -192,9 +149,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 						reply.status(resultMetadata.status ? resultMetadata.status : resultMetadata.error ? 400 : 200);
 
-						const resultSchema = resultMetadata?.schema?.split(',') as string[] | undefined;
-
-						if (!resultSchema && resultMetadata.error) {
+						if (resultMetadata.error) {
 							return {
 								error: !!resultMetadata.error,
 								success: !!resultMetadata.success,
@@ -202,24 +157,9 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 							};
 						}
 
-						if (!resultSchema && !resultMetadata.error) {
-							return results;
-						}
-
-						const preparedResult = resultSchema!.map((type, index) => {
-							if (type === 'object') {
-								return results[index][0];
-							} else {
-								return results[index];
-							}
-						});
-
-						if (preparedResult.length === 1) {
-							return preparedResult[0];
-						} else {
-							return preparedResult;
-						}
+						return results;
 					} catch (error: any) {
+						console.error(error);
 						const errorMessage = `Error in handler for procedure ${procedure.name}: ${error.message}`;
 						throw new Error(errorMessage);
 					}
@@ -483,6 +423,110 @@ async function loadCustomValidations(customValidationsFolder: string): Promise<{
 	}
 
 	return validations;
+}
+
+class Procedures {
+	private procedures: Map<string, Procedure>;
+	private app: FastifyInstance;
+	constructor(procedures: Procedure[], app: FastifyInstance) {
+		this.procedures = new Map(procedures.map((p) => [p.name, p]));
+		this.app = app;
+	}
+
+	async execute(procedureName: string, request: FastifyRequest): Promise<[any, any]> {
+		const procedure = this.procedures.get(procedureName);
+		if (!procedure) {
+			throw new Error(`Procedure not found: ${procedureName}`);
+		}
+
+		const procedureParamMetadata = getParamMetadata(procedure.metadata);
+
+		const procedureParams = procedure.parameters.map((param) => {
+			const paramMeta = procedureParamMetadata[param];
+			if (!paramMeta) {
+				throw new Error(`Parameter metadata not found for parameter: ${param} in procedure: ${procedure.name}`);
+			}
+
+			let value;
+			switch (paramMeta.getFrom) {
+				case 'querystring':
+					value = (request.query as any)[paramMeta.alias];
+					break;
+				case 'params':
+					value = (request.params as any)[paramMeta.alias];
+					break;
+				case 'body':
+					value = (request.body as any)[paramMeta.alias];
+					break;
+				case 'headers':
+					value = request.headers[paramMeta.alias];
+					break;
+				case 'user':
+					//@ts-ignore
+					value = request.requestContext.get('user')?.[paramMeta.alias];
+					break;
+				default:
+					throw new Error(`Unknown getFrom value: ${paramMeta.getFrom} for parameter: ${param} in procedure: ${procedure.name}`);
+			}
+
+			if (value === undefined || value === null) {
+				return null;
+			}
+
+			if (Array.isArray(value) || typeof value === 'object') {
+				return JSON.stringify(value);
+			}
+
+			return value;
+		});
+
+		const sql = `CALL \`${procedure.name}\`(${procedureParams.map(() => '?').join(', ')})`;
+		const dbResponse = await this.app.db.query(sql, procedureParams);
+
+		const results = dbResponse[0] as any;
+
+		if (!Array.isArray(results)) {
+			return [results, null];
+		}
+
+		const info = results.pop();
+
+		const resultMetadata = results?.[0]?.[0]?.['#RESULT#'] ? results.shift()?.[0] : null;
+
+		return [results, resultMetadata];
+	}
+
+	async executef(procedureName: string, request: FastifyRequest): Promise<[any, any]> {
+		return await this.execute(procedureName, request).then(([results, resultMetadata]) => {
+			const resultSchema = resultMetadata?.schema?.split(',') as string[] | undefined;
+
+			if (!resultSchema && resultMetadata.error) {
+				return {
+					error: !!resultMetadata.error,
+					success: !!resultMetadata.success,
+					message: resultMetadata.message,
+				};
+			}
+
+			if (!resultSchema && !resultMetadata.error) {
+				return results;
+			}
+
+			const preparedResult = resultSchema!.map((type, index) => {
+				if (type === 'object') {
+					return results[index][0];
+				} else {
+					return results[index];
+				}
+			});
+
+			if (preparedResult.length === 1) {
+				return [preparedResult[0], resultMetadata];
+			} else {
+				return [preparedResult, resultMetadata];
+			}
+		});
+	}
 }
 
 export default fp(registerProcedureRoutes);
