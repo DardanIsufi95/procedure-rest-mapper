@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'npm:fastify';
-export async function preHandler(request: FastifyRequest, reply: FastifyReply) {
+export async function testHook(request: FastifyRequest, reply: FastifyReply) {
 	console.log('testssssssssssssssssssssssssssssssssss');
-	return 'test';
+	return reply.send('Hello World');
 }

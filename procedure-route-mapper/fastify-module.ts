@@ -28,6 +28,7 @@ import { setAuthContext } from '../auth/authHandler.ts';
 declare module 'fastify' {
 	interface FastifyInstance {
 		procedures: Procedures;
+		requestData: Map<string, any>;
 	}
 }
 
@@ -104,7 +105,7 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 		};
 	});
 
-	const proceduresHooksMap = await loadProcedureHooksMap(options.hooksFolder);
+	const hooks = await loadHooks(options.hooksFolder);
 
 	const validations = await loadCustomValidations(options.customValidationsFolder);
 
@@ -115,8 +116,35 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 
 	for (const procedure of procedures) {
 		try {
-			const hooks = proceduresHooksMap[procedure.name] || {};
 			const metadata = procedure.metadata;
+			const hookTags = metadata.filter((tag) => tag.tag === 'hooks');
+
+			const routeHooks: { [key: string]: Function[] } = {};
+
+			const allowedHookTypes = ['onRequest', 'preParsing', 'preValidation', 'preHandler', 'preSerialization', 'onSend', 'onResponse', 'onTimeout', 'onError'];
+
+			for (const hookTag of hookTags) {
+				const hookType = hookTag.name;
+				const functionsString = hookTag.description;
+				if (!hookType || !functionsString) {
+					throw new Error(`Invalid @hooks tag format in procedure ${procedure.name}`);
+				}
+				if (routeHooks[hookType]) {
+					throw new Error(`Multiple declarations of the same hookType '${hookType}' in procedure ${procedure.name}`);
+				}
+				if (!allowedHookTypes.includes(hookType)) {
+					throw new Error(`Invalid hookType '${hookType}' in procedure ${procedure.name}. Allowed hook types are: ${allowedHookTypes.join(', ')}`);
+				}
+				const functionNames = functionsString.split(',').map((fn) => fn.trim());
+				routeHooks[hookType] = functionNames.map((fnName) => {
+					const hookFunction = hooks[fnName];
+					if (!hookFunction) {
+						throw new Error(`Hook function '${fnName}' not found in hooks module for procedure ${procedure.name}`);
+					}
+					return hookFunction;
+				});
+			}
+
 			const [method, url] = parseProcedureName(procedure.name, options.procedureNamePrefix);
 
 			console.log(`Registering route: ${method} ${url}`);
@@ -130,15 +158,15 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 			const routeOptions: RouteOptions = {
 				method,
 				url,
-				preValidation: [setAuthContext, ...guards, ...(hooks.preValidation ? (Array.isArray(hooks.preValidation) ? hooks.preValidation : [hooks.preValidation]) : [])],
-				preHandler: hooks.preHandler ? (Array.isArray(hooks.preHandler) ? hooks.preHandler : [hooks.preHandler]) : [],
-				onRequest: hooks.onRequest,
-				preParsing: hooks.preParsing,
-				preSerialization: hooks.preSerialization,
-				onSend: hooks.onSend,
-				onResponse: hooks.onResponse,
-				onTimeout: hooks.onTimeout,
-				onError: hooks.onError,
+				preValidation: [setAuthContext, ...guards],
+				preHandler: [],
+				onRequest: [],
+				preParsing: [],
+				preSerialization: [],
+				onSend: [],
+				onResponse: [],
+				onTimeout: [],
+				onError: [],
 				handler: async (request, reply) => {
 					try {
 						const [results, resultMetadata] = await app.procedures.executef(procedure.name, request);
@@ -166,6 +194,10 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 				},
 				schema,
 			};
+
+			for (const [hookType, hookFunctions] of Object.entries(routeHooks)) {
+				(routeOptions as any)[hookType]?.push(...hookFunctions);
+			}
 			app.route(routeOptions);
 		} catch (error: any) {
 			const errorMessage = `Error in procedure ${procedure.name}: ${error.message}`;
@@ -363,6 +395,32 @@ async function loadProcedureHooksMap(hooksFolder: string) {
 			}
 
 			hooks[name] = module;
+		} catch (error: any) {
+			throw new Error(`Error loading hook module from file ${file.path}: ${error.message}`);
+		}
+	}
+
+	return hooks;
+}
+
+// Replace loadProcedureHooksMap with loadHooks
+async function loadHooks(hooksFolder: string): Promise<{ [name: string]: Function }> {
+	const hooks: { [name: string]: Function } = {};
+
+	for await (const file of expandGlob(`${join(Deno.cwd(), hooksFolder)}/**/*.ts`)) {
+		try {
+			const moduleUrl = new URL(`file://${file.path}`);
+			const module = await import(moduleUrl.href);
+
+			Object.entries(module).forEach(([name, fn]) => {
+				if (hooks[name]) {
+					throw new Error(`Duplicate hook function name: ${name} in ${moduleUrl.href}`);
+				}
+				if (typeof fn !== 'function') {
+					throw new Error(`Exported member '${name}' in ${moduleUrl.href} is not a function`);
+				}
+				hooks[name] = fn;
+			});
 		} catch (error: any) {
 			throw new Error(`Error loading hook module from file ${file.path}: ${error.message}`);
 		}
