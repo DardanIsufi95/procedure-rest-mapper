@@ -170,23 +170,24 @@ async function registerProcedureRoutes(app: FastifyInstance, options: ProcedureR
 				handler: async (request, reply) => {
 					try {
 						const [results, resultMetadata] = await app.procedures.executef(procedure.name, request);
-
+						
 						if (!resultMetadata) {
 							return results;
 						}
 
-						reply.status(resultMetadata.status ? resultMetadata.status : resultMetadata.error ? 400 : 200);
+						reply.status(resultMetadata?.status ? resultMetadata?.status : resultMetadata?.error ? 400 : 200);
 
-						if (resultMetadata.error) {
+						if (resultMetadata?.error) {
 							return {
-								error: !!resultMetadata.error,
-								success: !!resultMetadata.success,
-								message: resultMetadata.message,
+								error: !!resultMetadata?.error,
+								success: !!resultMetadata?.success,
+								message: resultMetadata?.message,
 							};
 						}
 
 						return results;
 					} catch (error: any) {
+						
 						throw error;
 					}
 				},
@@ -329,6 +330,8 @@ class ZodSchemaParser {
 
 		return context;
 	}
+
+
 
 	parse(string: string) {
 		try {
@@ -545,9 +548,10 @@ class Procedures {
 		const dbResponse = await this.app.db.query(sql, procedureParams);
 
 		const results = dbResponse[0] as any;
-
+		
+		
 		if (!Array.isArray(results)) {
-			return [results, null];
+			return [{}, null];
 		}
 
 		const info = results.pop();
@@ -559,18 +563,13 @@ class Procedures {
 
 	async executef(procedureName: string, request: FastifyRequest): Promise<[any, any]> {
 		return await this.execute(procedureName, request).then(([results, resultMetadata]) => {
+
+			
 			const resultSchema = resultMetadata?.schema?.split(',') as string[] | undefined;
 
-			if (!resultSchema && resultMetadata.error) {
-				return {
-					error: !!resultMetadata.error,
-					success: !!resultMetadata.success,
-					message: resultMetadata.message,
-				};
-			}
 
-			if (!resultSchema && !resultMetadata.error) {
-				return results;
+			if (!resultSchema ) {
+				return [results , resultMetadata];
 			}
 
 			const preparedResult = resultSchema!.map((type, index) => {
